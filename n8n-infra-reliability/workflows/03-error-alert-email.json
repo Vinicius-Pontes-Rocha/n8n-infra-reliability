@@ -1,0 +1,101 @@
+{
+  "name": "03-error-alert-email",
+  "nodes": [
+    {
+      "name": "Quando um workflow falhar",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Testar aviso",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -260,
+        500
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Erro de exemplo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        500
+      ],
+      "parameters": {
+        "jsCode": "return [{ json: { workflow: { name: 'TESTE do alerta (pode ignorar)' }, execution: { lastNodeExecuted: 'nenhuma', error: { message: 'Isto é só um teste: o alerta de erros está funcionando.' }, url: '<N8N_HOST_URL>' } } }];"
+      }
+    },
+    {
+      "name": "Gmail - avisar TI",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        260,
+        300
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "<EMAIL>",
+        "subject": "={{ '⚠️ Erro no n8n: ' + $json.workflow.name }}",
+        "emailType": "text",
+        "message": "={{ 'O workflow \"' + $json.workflow.name + '\" falhou.\\n\\nEtapa: ' + ($json.execution.lastNodeExecuted || 'não informada') + '\\nErro: ' + String(($json.execution.error && $json.execution.error.message) || 'sem mensagem').slice(0, 1000) + '\\n\\nAbrir a execução: ' + ($json.execution.url || '<N8N_HOST_URL>') }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "gmailOAuth2"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Testar aviso": {
+      "main": [
+        [
+          {
+            "node": "Erro de exemplo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quando um workflow falhar": {
+      "main": [
+        [
+          {
+            "node": "Gmail - avisar TI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Erro de exemplo": {
+      "main": [
+        [
+          {
+            "node": "Gmail - avisar TI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

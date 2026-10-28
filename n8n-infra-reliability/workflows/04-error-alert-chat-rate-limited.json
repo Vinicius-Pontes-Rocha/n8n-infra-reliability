@@ -1,0 +1,104 @@
+{
+  "name": "04-error-alert-chat-rate-limited",
+  "nodes": [
+    {
+      "name": "Quando um fluxo falhar",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Montar aviso (1 por hora)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// No máximo 1 aviso por fluxo a cada 60 min, para um fluxo que roda de 5 em 5 min não lotar o privado.\nconst e = $input.first().json;\nconst wf = e.workflow || {};\nconst ex = e.execution || {};\nconst mem = $getWorkflowStaticData('global');\nconst agora = Date.now();\nconst ultimo = (mem.ultimo || {})[wf.id] || 0;\nif (agora - ultimo < 60 * 60 * 1000) return [];\nmem.ultimo = { ...(mem.ultimo || {}), [wf.id]: agora };\nconst msg = String((ex.error && (ex.error.message || ex.error.description)) || 'sem mensagem').slice(0, 300);\nconst no = ex.lastNodeExecuted || '?';\nconst link = ex.url || '';\nreturn [{ json: {\n  titulo: '⚠️ Erro no fluxo: ' + (wf.name || wf.id),\n  conteudo: '• Nó: ' + no + '\\n• Erro: ' + msg + (link ? '\\n• Execução: ' + link : '') + '\\n_Peça ao Claude: \"confere os erros\"._'\n} }];"
+      }
+    },
+    {
+      "name": "Enviar no privado",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        448,
+        0
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "<WORKFLOWID>"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "titulo": "={{ $json.titulo }}",
+            "conteudo": "={{ $json.conteudo }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "titulo",
+              "displayName": "titulo",
+              "type": "string",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "conteudo",
+              "displayName": "conteudo",
+              "type": "string",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": true
+        },
+        "options": {
+          "waitForSubWorkflow": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Quando um fluxo falhar": {
+      "main": [
+        [
+          {
+            "node": "Montar aviso (1 por hora)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar aviso (1 por hora)": {
+      "main": [
+        [
+          {
+            "node": "Enviar no privado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

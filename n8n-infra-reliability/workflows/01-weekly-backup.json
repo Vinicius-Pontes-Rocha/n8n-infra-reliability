@@ -1,0 +1,353 @@
+{
+  "name": "01-weekly-backup",
+  "nodes": [
+    {
+      "name": "Todo domingo 3h",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                0
+              ],
+              "triggerAtHour": 3
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Drive pessoal - procurar pasta Backup n8n",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        260,
+        300
+      ],
+      "parameters": {
+        "url": "https://www.googleapis.com/drive/v3/files",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "name='Backup n8n' and mimeType='application/vnd.google-apps.folder' and 'root' in parents and trashed=false"
+            },
+            {
+              "name": "fields",
+              "value": "files(id,name)"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "googleDriveOAuth2Api"
+        }
+      }
+    },
+    {
+      "name": "Drive pessoal - garantir pasta Backup n8n",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        520,
+        300
+      ],
+      "parameters": {
+        "method": "={{ ($json.files || []).length ? 'PATCH' : 'POST' }}",
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files' + (($json.files || []).length ? '/' + $json.files[0].id : '') }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(($json.files || []).length ? {} : { name: 'Backup n8n', mimeType: 'application/vnd.google-apps.folder', parents: ['root'] }) }}",
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "googleDriveOAuth2Api"
+        }
+      }
+    },
+    {
+      "name": "n8n - listar todos os workflows",
+      "type": "n8n-nodes-base.n8n",
+      "typeVersion": 1,
+      "position": [
+        780,
+        300
+      ],
+      "parameters": {
+        "resource": "workflow",
+        "operation": "getAll",
+        "returnAll": true,
+        "filters": {},
+        "requestOptions": {}
+      },
+      "credentials": {
+        "n8nApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "n8nApi"
+        }
+      }
+    },
+    {
+      "name": "Montar arquivo do backup",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const wfs = $input.all().map(i => i.json);\nconst dia = $now.setZone('America/Sao_Paulo').toFormat('yyyy-MM-dd');\nconst nome = `backup-n8n-${dia}.json`;\nconst conteudo = { geradoEm: $now.toISO(), total: wfs.length, workflows: wfs };\nconst buf = Buffer.from(JSON.stringify(conteudo, null, 2), 'utf8');\nreturn [{\n  json: { nome, total: wfs.length, tamanhoKB: Math.round(buf.length / 1024), pastaId: $('Drive pessoal - garantir pasta Backup n8n').first().json.id },\n  binary: { data: await this.helpers.prepareBinaryData(buf, nome, 'application/json') }\n}];"
+      }
+    },
+    {
+      "name": "Drive pessoal - salvar backup",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1300,
+        300
+      ],
+      "parameters": {
+        "name": "={{ $json.nome }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "<DRIVEID>"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "<FOLDERID>"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "googleDriveOAuth2Api"
+        }
+      }
+    },
+    {
+      "name": "Drive pessoal - listar backups",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1560,
+        300
+      ],
+      "parameters": {
+        "url": "https://www.googleapis.com/drive/v3/files",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "q",
+              "value": "={{ \"'\" + $('Montar arquivo do backup').first().json.pastaId + \"' in parents and trashed=false and name contains 'backup-n8n-'\" }}"
+            },
+            {
+              "name": "fields",
+              "value": "files(id,name)"
+            },
+            {
+              "name": "pageSize",
+              "value": "200"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "googleDriveOAuth2Api"
+        }
+      }
+    },
+    {
+      "name": "Backups com mais de 8 semanas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1820,
+        300
+      ],
+      "parameters": {
+        "jsCode": "const manter = 8;\nconst files = ($input.first().json.files || []).slice().sort((a, b) => b.name.localeCompare(a.name));\nreturn files.slice(manter).map(f => ({ json: { id: f.id, name: f.name } }));"
+      }
+    },
+    {
+      "name": "Drive pessoal - mandar backup antigo p/ lixeira",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2080,
+        300
+      ],
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ 'https://www.googleapis.com/drive/v3/files/' + $json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleDriveOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"trashed\": true}",
+        "options": {}
+      },
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "googleDriveOAuth2Api"
+        }
+      }
+    },
+    {
+      "name": "Rodar backup agora",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        400
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "Sticky Note 49ae73b6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -120
+      ],
+      "parameters": {
+        "content": "## Backup semanal do n8n\nTodo domingo 3h salva TODOS os workflows num arquivo `backup-n8n-AAAA-MM-DD.json` na pasta **Backup n8n** do Drive pessoal (Redacted). Guarda os 8 mais recentes; os antigos vão para a lixeira.\n\n**Restaurar:** baixar o arquivo, abrir, copiar o workflow desejado e importar no n8n.\n\nNão contém senhas/credenciais (o n8n não exporta).",
+        "color": 5,
+        "width": 520,
+        "height": 260
+      }
+    }
+  ],
+  "connections": {
+    "Todo domingo 3h": {
+      "main": [
+        [
+          {
+            "node": "Drive pessoal - procurar pasta Backup n8n",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive pessoal - procurar pasta Backup n8n": {
+      "main": [
+        [
+          {
+            "node": "Drive pessoal - garantir pasta Backup n8n",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive pessoal - garantir pasta Backup n8n": {
+      "main": [
+        [
+          {
+            "node": "n8n - listar todos os workflows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n - listar todos os workflows": {
+      "main": [
+        [
+          {
+            "node": "Montar arquivo do backup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar arquivo do backup": {
+      "main": [
+        [
+          {
+            "node": "Drive pessoal - salvar backup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive pessoal - salvar backup": {
+      "main": [
+        [
+          {
+            "node": "Drive pessoal - listar backups",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive pessoal - listar backups": {
+      "main": [
+        [
+          {
+            "node": "Backups com mais de 8 semanas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backups com mais de 8 semanas": {
+      "main": [
+        [
+          {
+            "node": "Drive pessoal - mandar backup antigo p/ lixeira",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rodar backup agora": {
+      "main": [
+        [
+          {
+            "node": "Drive pessoal - procurar pasta Backup n8n",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

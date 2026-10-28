@@ -1,0 +1,331 @@
+{
+  "name": "02-ai-cost-circuit-breaker",
+  "nodes": [
+    {
+      "name": "A cada 15 min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/15 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Fluxos com IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        96
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// Fluxos que chamam o Gemini. max_hora = execuções por hora acima do normal (= algo em loop).\n// custo = R$ estimado por execução (para estimar o saldo). frear = pode ser desligado sozinho.\n// As menções não estão aqui: o custo delas vem real da tabela \"Zezinho - Consumo de IA\".\nconst FLUXOS = [\n  ['sXf86sWCWAIoXSc2', 'Zoom → ATA', 4, 0.20, true],\n  ['0CQc4bAzQukc8rXC', 'Cartão Redacted (Conta Azul)', 15, 0.10, true],\n  ['bd6cot6MpNovWKkz', 'Cartão Redacted Redacted Sicredi (Omie)', 15, 0.10, true],\n  ['aygN6bOmhnLblszC', 'Cartão Redacted Redacted Caixa (Omie)', 15, 0.10, true],\n  ['hXv7DXshDPjcaGXX', 'Cartão clientes Conta Azul Mais', 15, 0.10, true],\n  // Agente (relatório das 17h): não dá para pausar sozinho; conta pela ferramenta que lê os chats.\n  ['FbT6iViSXFWoi9xY', 'Agente Zezinho (relatório diário)', 6, 0.30, false],\n];\nreturn FLUXOS.map(f => ({ json: { id: f[0], nome: f[1], max_hora: f[2], custo: f[3], frear: f[4] } }));"
+      }
+    },
+    {
+      "name": "Testar agora",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        192
+      ],
+      "parameters": {}
+    },
+    {
+      "name": "n8n - execuções recentes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        96
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ '<N8N_HOST_URL>' + $json.id + '&limit=100' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "n8nApi",
+        "options": {}
+      },
+      "credentials": {
+        "n8nApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "n8nApi"
+        }
+      }
+    },
+    {
+      "name": "Consumo das menções",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        96
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "<DATATABLEID>"
+        },
+        "returnAll": true
+      }
+    },
+    {
+      "name": "Analisar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        96
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// FREIO DE CUSTOS (sem IA). Cada aviso sai 1 vez só (memória do fluxo).\nconst COMPRA = { data: '2026-10-23T00:00:00-03:00', valor: 70 }; // atualizar quando comprar mais créditos\nconst AVISO_SALDO = [50, 63];          // R$ gastos (estimados) que geram aviso: ~70% e ~90%\nconst MENCOES_MAX_HORA = 15;           // chamadas ao Gemini das menções por hora (sem contar o provão)\nconst MENCOES_MAX_DIA = 5;             // R$ por dia (o teto normal é R$ 2,50)\nconst agora = Date.now();\nconst hoje = $now.setZone('America/Sao_Paulo').toFormat('yyyy-MM-dd');\nconst desde = new Date(COMPRA.data).getTime();\nconst st = $getWorkflowStaticData('global');\nst.avisos = st.avisos || {};\nconst jaAvisou = k => st.avisos[k] === true;\nconst marcar = k => { st.avisos[k] = true; };\nconst acoes = [];\nconst fl = $('Fluxos com IA').all().map(i => i.json);\nconst resp = $('n8n - execuções recentes').all().map(i => i.json);\nlet estimado = 0;\nfl.forEach((f, i) => {\n  const ex = (resp[i] && resp[i].data) || [];\n  const t = e => new Date(e.startedAt).getTime();\n  const ultimaHora = ex.filter(e => agora - t(e) < 3600e3).length;\n  const erros = ex.filter(e => (e.status === 'error' || e.status === 'crashed') && agora - t(e) < 16 * 60e3).length;\n  estimado += ex.filter(e => t(e) >= desde && e.status !== 'canceled').length * f.custo;\n  if (ultimaHora > f.max_hora && !jaAvisou('loop-' + f.id + '-' + hoje)) {\n    marcar('loop-' + f.id + '-' + hoje);\n    acoes.push(f.frear\n      ? { acao: 'frear', id: f.id, titulo: '🛑 Freio de custos: desliguei ' + f.nome, texto: f.nome + ' rodou ' + ultimaHora + ' vezes na última hora (o normal é até ' + f.max_hora + '). Parece loop e cada execução gasta crédito do Gemini, então DESLIGUEI o fluxo. Para religar: abra o fluxo no n8n e clique em Publish depois de ver o que houve.' }\n      : { acao: 'avisar', titulo: '⚠️ Freio de custos: ' + f.nome + ' acima do normal', texto: f.nome + ' rodou ' + ultimaHora + ' vezes na última hora (o normal é até ' + f.max_hora + '). O agente não é pausado sozinho: se continuar, desligue a tarefa no agente Gestor Contábil IA.' });\n  }\n  if (erros && !jaAvisou('erro-' + f.id + '-' + hoje)) {\n    marcar('erro-' + f.id + '-' + hoje);\n    acoes.push({ acao: 'avisar', titulo: '⚠️ ' + f.nome + ' deu erro', texto: f.nome + ' teve ' + erros + ' erro(s) nos últimos 15 min. Pode ser falta de saldo ou o teto de R$ ' + COMPRA.valor + ' do Gemini (AI Studio → Gasto/Faturamento). Veja a execução no n8n. (Aviso 1 vez por dia.)' });\n  }\n});\n// Menções: custo real gravado pelo fluxo de menções. O provão (teste do TI, quem = 'Provão') entra no gasto, mas não conta como loop.\nconst linhas = $('Consumo das menções').all().map(i => i.json).filter(l => l.dia);\nconst reais = linhas.filter(l => l.origem === 'mencao' && l.quem !== 'Provão');\nconst mHora = reais.filter(l => agora - new Date(l.createdAt).getTime() < 3600e3).length;\nconst mHoje = reais.filter(l => l.dia === hoje).reduce((s, l) => s + (Number(l.custo_brl) || 0), 0);\nestimado += linhas.filter(l => new Date(l.createdAt).getTime() >= desde).reduce((s, l) => s + (Number(l.custo_brl) || 0), 0);\nif ((mHora > MENCOES_MAX_HORA || mHoje > MENCOES_MAX_DIA) && !jaAvisou('loop-mencoes-' + hoje)) {\n  marcar('loop-mencoes-' + hoje);\n  acoes.push({ acao: 'frear', id: 'mzuQpaZ7PSGfU8DB', titulo: '🛑 Freio de custos: desliguei as respostas às menções', texto: 'As menções fizeram ' + mHora + ' chamadas ao Gemini na última hora e gastaram R$ ' + mHoje.toFixed(2) + ' hoje (limites: ' + MENCOES_MAX_HORA + '/hora e R$ ' + MENCOES_MAX_DIA + '/dia). DESLIGUEI o fluxo \"Zezinho · responder menções\". As menções continuam guardadas na fila (o vigia segue rodando). Para religar: abra o fluxo e clique em Publish.' });\n}\n// Saldo estimado dos créditos\nAVISO_SALDO.forEach(lim => {\n  const k = 'saldo-' + COMPRA.data + '-' + lim;\n  if (estimado >= lim && !jaAvisou(k)) {\n    marcar(k);\n    acoes.push({ acao: 'avisar', titulo: '💰 Créditos do Gemini acabando', texto: 'Gasto estimado desde ' + COMPRA.data.slice(0, 10) + ': R$ ' + estimado.toFixed(2) + ' de R$ ' + COMPRA.valor + '. Confira o saldo real no AI Studio → Faturamento e peça ao CEO para comprar mais créditos se precisar. Quando comprar, atualize COMPRA no fluxo \"Zezinho · freio de custos\".' });\n  }\n});\nreturn acoes.map(a => ({ json: { ...a, estimado: Math.round(estimado * 100) / 100 } }));"
+      }
+    },
+    {
+      "name": "Por ação",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        1120,
+        96
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "outputKey": "frear",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.acao }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "frear"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "outputKey": "avisar",
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.acao }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "avisar"
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "name": "Desligar o fluxo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1344,
+        32
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ '<N8N_HOST_URL>' + $json.id + '/deactivate' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "n8nApi",
+        "options": {}
+      },
+      "credentials": {
+        "n8nApi": {
+          "id": "<CREDENTIAL_ID>",
+          "name": "n8nApi"
+        }
+      }
+    },
+    {
+      "name": "Avisar Redacted no privado",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        1568,
+        96
+      ],
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "<WORKFLOWID>"
+        },
+        "mode": "each",
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "titulo": "={{ $('Analisar').item.json.titulo }}",
+            "conteudo": "={{ $('Analisar').item.json.texto + ($('Analisar').item.json.acao === 'frear' ? ($json.active === false ? ' ✅ Fluxo desligado.' : ' ❗ NÃO consegui desligar sozinho: desligue à mão.') : '') }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "titulo",
+              "displayName": "titulo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "conteudo",
+              "displayName": "conteudo",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": true
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "A cada 15 min": {
+      "main": [
+        [
+          {
+            "node": "Fluxos com IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fluxos com IA": {
+      "main": [
+        [
+          {
+            "node": "n8n - execuções recentes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Testar agora": {
+      "main": [
+        [
+          {
+            "node": "Fluxos com IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "n8n - execuções recentes": {
+      "main": [
+        [
+          {
+            "node": "Consumo das menções",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consumo das menções": {
+      "main": [
+        [
+          {
+            "node": "Analisar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analisar": {
+      "main": [
+        [
+          {
+            "node": "Por ação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Por ação": {
+      "main": [
+        [
+          {
+            "node": "Desligar o fluxo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Avisar Redacted no privado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Desligar o fluxo": {
+      "main": [
+        [
+          {
+            "node": "Avisar Redacted no privado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
